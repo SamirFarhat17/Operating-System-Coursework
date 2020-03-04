@@ -19,9 +19,6 @@ using namespace infos::util;
 
 #define MAX_ORDER	17
 
-
-
-
 /**
  * A buddy page allocation algorithm.
  */
@@ -41,7 +38,7 @@ private:
 	 */
 	bool page_contained(PageDescriptor* block, int order, PageDescriptor* pgd) {
 		// size is the power of 2 and shifting by x is the same as multiplying by 2^x
-		int size = pages_per_block(order);
+		uint64_t size = pages_per_block(order);
 		// retrieves last page
 		PageDescriptor* final_page = block + size;
 		// finds if addres is between first and last page of block
@@ -62,7 +59,7 @@ private:
 			if (*point == pgd) {
 				return point;
 			}
-			// use to get next available
+			// Get next available
 			point = &(*point)->next_free;
 		}
 
@@ -82,9 +79,9 @@ private:
 	PageMerge page_merge(PageDescriptor *pgd, int order) {
 		//checks
 		assert(is_correct_alignment_for_order(pgd, order));
-		assert(order >= 0 && order <= MAX_ORDER);
+		assert(order >= 0 && order < MAX_ORDER);
 		// Can't merge further since nothing above maximum
-		if(order == MAX_ORDER) return PageMerge{order,pgd};
+		if(order == MAX_ORDER-1) return PageMerge{order,pgd};
 
 		// recursively merge till limit is hit or buddy isn't free(to keep contiguous)
 		auto to_be_merged = buddy_of(pgd,order);
@@ -96,7 +93,7 @@ private:
 			// get next buddy for merging
 			to_be_merged = buddy_of(pgd, order);
 
-			if (order == MAX_ORDER) {
+			if (order == MAX_ORDER-1) {
 				break;
 			}
 		}
@@ -165,8 +162,7 @@ private:
 	 * @return Returns the slot (i.e. a pointer to the pointer that points to the block) that the block
 	 * was inserted into.
 	 */
-	PageDescriptor **insert_block(PageDescriptor *pgd, int order)
-	{
+	PageDescriptor **insert_block(PageDescriptor *pgd, int order) {
 		// Starting from the _free_area array, find the slot in which the page descriptor
 		// should be inserted.
 		PageDescriptor** slot = &_free_areas[order];
@@ -256,7 +252,7 @@ private:
 		assert(is_correct_alignment_for_order(*block_pointer, source_order));
 
 		// Since our target is above we have to be at least 1 below the Maximum
-		assert(source_order < MAX_ORDER);
+		//assert(source_order <= MAX_ORDER);
 
 		// Get target and blocks of interest
 		int target = source_order+1;
@@ -272,7 +268,9 @@ private:
 		// Remove old blocks and add new one
 		remove_block(left_buddy, source_order);
 		remove_block(right_buddy, source_order);
-		return insert_block(left_buddy, target);
+		PageDescriptor** new_block = insert_block(left_buddy, target);
+		
+		return new_block;
 	}
 	
 public:
@@ -294,11 +292,10 @@ public:
 	 */
 	PageDescriptor *alloc_pages(int order) override {
 		// Order checks
-		assert(order >= 0 && order <= MAX_ORDER);/*************/
-
+		assert(order >= 0 && order <= MAX_ORDER-1);
 		// Iterate through free blocks
 		int index_order = order;
-		auto free_block = _free_areas[order];
+		auto free_block = _free_areas[index_order];
 		while(!free_block || index_order > order) {
 			// if invalid order cannot allocate pages
 			if(index_order > MAX_ORDER || index_order < 0) return nullptr;
@@ -347,7 +344,7 @@ public:
 	 */
 	bool reserve_page(PageDescriptor *pgd) {
 		// Exploration parameters
-		int order = MAX_ORDER;
+		int order = MAX_ORDER-1;
 		PageDescriptor* current_block = nullptr;
 
 		// Go through possible orders starting with largest
@@ -358,14 +355,14 @@ public:
 				auto point = page_is_free(pgd, order);
 				// if valid reserve and return true
 				if(point == nullptr) return false;
-				remove_block(*point, 0);
+				remove_block(*point, order);
 				return true; 
 			}
 
 			// If block containing the page has been found split further to search for specific page
 			if(current_block != nullptr) {
 				auto left_buddy = split_block(&current_block, order);
-				int temp_order = order -1;
+				auto temp_order = order -1;
 
 				// If its not in LHS then it must be in the RHS
 				// Either way analyze block that contains it
@@ -402,12 +399,9 @@ public:
 	 * @return Returns TRUE if the algorithm was successfully initialised, FALSE otherwise.
 	 */
 	bool init(PageDescriptor *page_descriptors, uint64_t nr_page_descriptors) override {
-		mm_log.messagef(LogLevel::DEBUG, "Buddy Allocator Initialising pd=%p, nr=0x%lx", page_descriptors, nr_page_descriptors);
-
 		// Initialise the free area linked list for the maximum order
 		// to initialise the allocation algorithm.
-		
-		auto order = MAX_ORDER;
+		auto order = MAX_ORDER - 1;
 		uint64_t remaining_pages = nr_page_descriptors;
 
 		// Go through pages and checks
@@ -445,7 +439,7 @@ public:
 		mm_log.messagef(LogLevel::DEBUG, "BUDDY STATE:");
 		
 		// Iterate over each free area.
-		for (unsigned int i = 0; i < ARRAY_SIZE(_free_areas); i++) {
+		for (unsigned int i = 0; i < MAX_ORDER; i++) {
 			char buffer[256];
 			snprintf(buffer, sizeof(buffer), "[%d] ", i);
 						
