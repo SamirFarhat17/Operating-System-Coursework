@@ -1,11 +1,10 @@
-
 /*
  * CMOS Real-time Clock
  * SKELETON IMPLEMENTATION -- TO BE FILLED IN FOR TASK (3)
  */
 
 /*
- * STUDENT NUMBER: s1620208
+ * STUDENT NUMBER: s1746788
  */
 #include <infos/drivers/timer/rtc.h>
 #include <infos/util/lock.h>
@@ -27,183 +26,122 @@ public:
 
 	/**
 	 * Interrogates the RTC to read the current date & time.
-	 * @param current Populates the given structure with the current
-	 * data & time, as given by the CMOS RTC device.
+	 * @param tp Populates the tp structure with the current data & time, as
+	 * given by the CMOS RTC device.
 	 */
-	void read_timepoint(RTCTimePoint& current) override
+	void read_timepoint(RTCTimePoint& tp) override
 	{
-		current = get_timepoint();
-		RTCTimePoint previous = current;
+		tp = retrieve_timepoint();
+		RTCTimePoint old_tp = tp;
 
-		// Keep reading timepoints (from registers) until we get two values in a row.
-		// This avoids getting dodgy/inconsistent values due to RTC updates.
-		do {
-			previous = current;
-			current = get_timepoint();
-		} while (!tp_eq(current, previous));
-
-		if (is_bcd_mode()) {
-			convert_tp_from_bcd(current);
+		// Check timepoints till we get two different values (this avoids randomnes)
+		while(!timepoint_equivalent(tp, old_tp)) {
+			old_tp = tp;
+			tp = retrieve_timepoint();
 		}
 
-		// If we are in 12hr mode, and the PM bit is set
-		if (is_12hr_mode() && (current.hours & 0x80)) {
-			// Mask off the PM bit, add 12, and apply sanity check
-			// Note: Midnight in 12hr mode is `12`, not `0`
-			current.hours = ((current.hours & 0x7F) + 12) % 24;
+		// Check if binary coded decimal. if so convert to binary
+		if(check_bcd()) convert_binary(tp); 
+
+		// Make adjustments if in 12 hr mode and currently PM
+		if(in_12hr_mode() && (tp.hours & 0x80)) tp.hours = ((tp.hours & 0x7F) + 12) % 24;
+	}
+
+	/*
+	 * @param first First Timepoint
+	 * @param second Second Timepoint
+	 * @return true if both timepoints are equivalent, false otherwise
+	 */
+	bool timepoint_equivalent(RTCTimePoint first, RTCTimePoint second) {
+		if((first.seconds == second.seconds) && (first.minutes == second.minutes) && (first.hours == second.hours) && 
+		(first.day_of_month == second.day_of_month) && (first.month == second.month) && (first.year == second.year)) {
+			return true;
 		}
+		return false;
 	}
 
 	/**
 	 * Converts a timepoint from BCD to binary values
 	 * @param tp The timepoint to convert
 	 */
-	void convert_tp_from_bcd(RTCTimePoint& tp)
+	void convert_binary(RTCTimePoint& tp)
 	{
-		tp.seconds = from_bcd(tp.seconds);
-		tp.minutes = from_bcd(tp.minutes);
-		// Below line from https://wiki.osdev.org/CMOS#Examples
-		// tp.hours = ( (tp.hours & 0xF) + (((tp.hours & 0x70) / 16) * 10) ) | (tp.hours & 0x80);
-		tp.hours = from_bcd(tp.hours);
-		tp.day_of_month = from_bcd(tp.day_of_month);
-		tp.month = from_bcd(tp.month);
-		tp.year = from_bcd(tp.year);
+		// Conversion as per the osdev CMOS pages
+		tp.seconds = ((tp.seconds >> 4) * 10) + (tp.seconds & 0xF);
+		tp.minutes = ((tp.minutes >> 4) * 10) + (tp.minutes & 0xF);
+		tp.hours = ((tp.hours >> 4) * 10) + (tp.hours & 0xF);
+		tp.day_of_month = ((tp.day_of_month >> 4) * 10) + (tp.day_of_month & 0xF);
+		tp.month = ((tp.month >> 4) * 10) + (tp.month & 0xF);
+		tp.year = ((tp.year >> 4) * 10) + (tp.year & 0xF);
 	}
 
 	/**
-	 * Reads the CMOS to determine if we are in BCD mode
-	 * @returns true if we are in BCD mode
+	 * Reads the CMOS to check if value is in BCD
+	 * @returns true if we in Binary Coded Decimal
 	 */
-	bool is_bcd_mode()
-	{
-		// You must make sure that interrupts are
-		// disabled when accessing the RTC
-		UniqueIRQLock l;
-
-		// Read bit 2 from status register B
-		auto bit = get_cmos_register(0xB, 2);
-
-		// The bit is zero if register values are in binary coded decimal
-		return bit == 0;
+	bool check_bcd() {
+		// We need to prevent interrupts when accessing the CMOS
+		UniqueIRQLock lock;
+		return (get_bit(0xB, 2) == 0);
 	}
 
-	/**
-	 * Reads the CMOS to determine if we are in 12hr mode
-	 * @returns true if we are in 12hr mode
-	 */
-	bool is_12hr_mode()
+	bool in_12hr_mode()
 	{
-		// You must make sure that interrupts are
-		// disabled when accessing the RTC
+		// Diable interrupts when accessing RTC
 		UniqueIRQLock l;
 
 		// Read bit 1 from status register B
-		auto bit = get_cmos_register(0xB, 2);
-
-		// The bit is zero if we are in 12hr mode
-		return bit == 0;
+		return get_bit(0xB, 2) == 0;
 	}
 
-private:
-	int const CMOS_ADDRESS = 0x70;
-	int const CMOS_DATA = 0x71;
-
 	/**
-	 * Reads a specific register from the CMOS
-	 * @warning Does not ensure interrupts are disabled. Use with care.
-	 * @param reg The register to read
-	 * @return The data at the given register
+	 * Reads a register from the CMOS
+	 * @param reg The register to be read read
+	 * @return The data at that register
 	 */
-	uint8_t get_cmos_register(int reg)
+	uint8_t get_register(int reg)
 	{
-		__outb(CMOS_ADDRESS, reg); // activate the register
-		return __inb(CMOS_DATA);
+		__outb(0x70, reg);
+		return __inb(0x71);
 	}
 
 	/**
-	 * Reads a specific bit from a specific register from the CMOS
-	 * @warning Does not ensure interrupts are disabled. Use with care.
-	 * @warning This reads the entire register as well, so is not suitable for batch operations.
-	 * @param reg The register to read
-	 * @param bit The nth bit to read
+	 * Reads a specific bit from a register in the CMOS
+	 * @param reg The register 
+	 * @param bit The nth bit of the register to be read
 	 * @return The nth bit at the given register
 	 */
-	uint8_t get_cmos_register(int reg, int bit)
+	uint8_t get_bit(int reg, int bit)
 	{
-		return (get_cmos_register(reg) >> bit) & 1;
+		return (get_register(reg) >> bit) & 1;
 	}
 
 	/**
-	 * Reads the CMOS to determine if an RTC update is in progress
-	 * @warning Does not ensure interrupts are disabled. Use with care.
-	 * @return true if time update in progress, false otherwise (date and time is safe to be read)
-	 */
-	bool is_update_in_progress()
-	{
-		// Note: @returns text has been plucked from http://www.bioscentral.com/misc/cmosmap.htm
-
-		// Read bit 7 from status register A
-		auto bit = get_cmos_register(0xA, 7);
-
-		// The bit is non-zero if an update is in progress
-		return bit != 0;
-	}
-
-	/**
-	 * Reads a timepoint straight from the RTC.
-	 * If an RTC update is currently in progress, it will block until the update has completed.
-	 * @warning THIS IS EXTREMELY EXPENSIVE AND UNSAFE.
+	 * Reads a timepoint from the RTC.
+	 * If an RTC update is in progress, it will block until it completes.
 	 * @return The timepoint composed from several register reads
 	 */
-	RTCTimePoint get_timepoint()
-	{
-		// You must make sure that interrupts are
-		// disabled when accessing the RTC
-		UniqueIRQLock l;
+	RTCTimePoint retrieve_timepoint() {
+		// Make sure interrupts aren't allowed when accessing the RTC
+		UniqueIRQLock lock;
 
-		// Wait for current update to complete
-		while (is_update_in_progress()) {
-			// nop
+		while(get_bit(0xA, 7) != 0) {
+			// Wait for completion by checking the status continually
 		}
 
-		return RTCTimePoint{
-			.seconds = get_cmos_register(0x00),
-			.minutes = get_cmos_register(0x02),
-			.hours = get_cmos_register(0x04),
-			.day_of_month = get_cmos_register(0x07),
-			.month = get_cmos_register(0x08),
-			.year = get_cmos_register(0x09),
+		// collect relevant data and return
+		RTCTimePoint tp = {
+			.seconds = get_register(0x00),
+			.minutes = get_register(0x02),
+			.hours = get_register(0x04),
+			.day_of_month = get_register(0x07),
+			.month = get_register(0x08),
+			.year = get_register(0x09),
 		};
-	}
 
-	/**
-	 * Checks to see if two timepoints are equal
-	 * @param a Timepoint A
-	 * @param b Timepoint B
-	 * @return true if timepoint A == timepoint B, false otherwise
-	 */
-	bool tp_eq(RTCTimePoint a, RTCTimePoint b) {
-		return (
-			(a.seconds == b.seconds) &&
-			(a.minutes == b.minutes) &&
-			(a.hours == b.hours) &&
-			(a.day_of_month == b.day_of_month) &&
-			(a.month == b.month) &&
-			(a.year == b.year) &&
-			true
-		);
-	}
-
-	/**
-	 * Converts a two-digit number in BCD to the native number format
-	 * @param n The binary-coded decimal number
-	 * @return A natively understood number
-	 */
-	constexpr inline unsigned short from_bcd(unsigned short n) {
-		return ((n >> 4) * 10) + (n & 0xF);
+		return tp;
 	}
 };
 
 const DeviceClass CMOSRTC::CMOSRTCDeviceClass(RTC::RTCDeviceClass, "cmos-rtc");
-
 RegisterDevice(CMOSRTC);
